@@ -1,7 +1,7 @@
 <!-- Copyright (c) 2026 Chris Favre. This cover is licensed under the MIT License. -->
 # Lessons Learned
 
-This document captures implementation and operational lessons accumulated across v0.4.0, v0.5.0, v0.5.1, v0.5.2, v0.6.x, v0.7.0, v0.8.0, and v0.8.1.
+This document captures implementation and operational lessons accumulated across v0.4.0, v0.5.0, v0.5.1, v0.5.2, v0.6.x, v0.7.0, and v0.8.0.
 
 ---
 
@@ -532,28 +532,3 @@ format to match native Niagara haystack conventions (`h4:*` marker slots, `baja:
   ```
 - Bean convention: `boolean` properties also need `isFoo()` returning the same value as `getFoo()`.
 - This applies equally to properties declared with `Flags.HIDDEN` — hidden means hidden from UI, not hidden from introspection.
-
----
-
-## v0.8.1 — Autopilot Validation Hardening
-
-## 39. Missing operation `type` must fail deterministically with a repair path
-
-- Production issue: clients occasionally sent wiresheet operations without `type`, producing ambiguous failures such as `unsupported type: null`.
-- Root cause: validation relied on null-tolerant string conversion and generic error text, which did not provide stable recovery signals for autonomous clients.
-- Fix: server-side validator now treats operation shape as an explicit contract and fails fast with deterministic fields:
-  - `code` (for programmatic retry logic)
-  - `message` and compatibility `error` text
-  - `path` to the bad payload field
-  - `hint` with direct correction guidance
-  - `allowedValues` for enum repair (`createComponent`, `setSlot`, `link`, `addCompositePin`)
-
-**Key rule:** never let missing enum fields degrade into `null` runtime type errors. Reject at validation boundary with path + allowed values.
-
-## 40. Keep client schema discovery and runtime validator sourced from the same constants
-
-- Added `nmcp.wiresheet.schema` as a read-only introspection tool for operation types, required fields, optional fields, and minimal valid payload.
-- The schema output is generated from the same server constants used by validation to prevent drift between docs, clients, and execution behavior.
-- This enables one-retry autopilot correction loops: client reads schema, sends payload, and if rejected receives deterministic structured guidance that maps directly back to schema fields.
-
-**Key rule:** schema introspection is only trustworthy when it is derived from runtime validator sources of truth.

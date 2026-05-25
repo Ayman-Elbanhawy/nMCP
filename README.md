@@ -31,7 +31,7 @@ See [NOTICES.md](NOTICES.md) for full details.
 # nMCP Module
 
 ![Niagara](https://img.shields.io/badge/Niagara-prior%20to%204.13-blue)
-![Version](https://img.shields.io/badge/version-0.8.1-orange)
+![Version](https://img.shields.io/badge/version-0.8.0-orange)
 ![MCP](https://img.shields.io/badge/nmcp-JSON--RPC%202.0-0A7CFF)
 ![Write Gated](https://img.shields.io/badge/Safety-Write--Gated-success)
 ![Claude Validated](https://img.shields.io/badge/Claude-Validated-7B61FF)
@@ -68,9 +68,9 @@ allowlist enforcement.
 | Document | Description |
 |---|---|
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | Build, install, start proxy, verify end-to-end |
-| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | All 37 tools with arguments, examples, and response shapes |
+| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | All 36 tools with arguments, examples, and response shapes |
 | [docs/NIAGARA_OBJECTS_ROADMAP.md](docs/NIAGARA_OBJECTS_ROADMAP.md) | Planned expansions (M1–M5) |
-| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | v0.4.0 through v0.8.1 implementation lessons and operational guidance |
+| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | v0.4.0 through v0.8.0 implementation lessons and operational guidance |
 | [nMCP-client](https://github.com/makeitworkok/nMCP-client) | Lightweight client for calling nMCP tools from scripts and apps |
 
 ---
@@ -106,7 +106,7 @@ Client (Claude Desktop / VS Code Copilot / curl / nMCP-client)
               ├── NiagaraFaultScanTool    fault.scan
               ├── NiagaraBuildingBriefTool building.brief
               ├── NiagaraHaystackTools    haystack.getRuleset/setRuleset/applyRules/scanPoints/suggestTags
-              ├── NiagaraWiresheetTools   wiresheet.plan/diff/apply/schema/links + addCompositePin
+              ├── NiagaraWiresheetTools   wiresheet.plan/diff/apply/links + addCompositePin
               ├── NiagaraWriteTools       point.write, point.override, component.invokeAction, station.restart, driver.discoverAndAdd (write-gated)
               ├── NiagaraBacnetTools      bacnet.devices, bacnet.discover
               └── NiagaraJson             zero-dependency JSON builder
@@ -177,7 +177,6 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the full walkthrough.
 | `nmcp.wiresheet.plan` | Wiresheet | Validate and normalize declarative wiresheet operations |
 | `nmcp.wiresheet.diff` | Wiresheet | Deterministic desired-state diff for operation payloads |
 | `nmcp.wiresheet.apply` | Wiresheet | Write-gated execution report with `dryRun` default true |
-| `nmcp.wiresheet.schema` | Wiresheet | Read-only schema introspection for operation types and required fields |
 | `nmcp.wiresheet.links` | Wiresheet | Inspect runtime links for a component/slot (diagnostic) |
 | `nmcp.point.write` | Write | Write a value to a writable point at operator priority (write-gated) |
 | `nmcp.point.override` | Write | Override a point at priority 8 (write-gated) |
@@ -185,7 +184,7 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the full walkthrough.
 | `nmcp.station.restart` | Write | Request a controlled station restart (write-gated) |
 | `nmcp.driver.discoverAndAdd` | Write | Trigger driver network discovery (write-gated) |
 
-Total tools in v0.8.1: 37.
+Total tools in v0.8.0: 36.
 
 Full argument and response documentation: [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md)
 
@@ -260,14 +259,6 @@ Any ORD that does not start with one of these roots is immediately rejected.
 5. **Result caps** — all queries honour `maxResults`.
 6. **Fail-closed** — uncertain security checks deny access.
 
-### Wiresheet Autopilot Hardening
-
-- `nmcp.wiresheet.plan`, `nmcp.wiresheet.diff`, and `nmcp.wiresheet.apply` now enforce strict operation object shape and type validation before execution.
-- Validation is deterministic and fail-fast: unsupported or missing operation fields are rejected before any mutation path can begin.
-- `nmcp.wiresheet.apply` continues to require both allowlist compliance and write-mode authorization (`readOnly=false`) for non-dry-run calls.
-- Error responses keep backward-compatible top-level `error` text and now include machine-readable fields: `code`, `message`, `path`, `hint`, `allowedValues`.
-- `nmcp.wiresheet.schema` exposes authoritative operation types, required fields, optional fields, and a minimal valid payload sample so autonomous clients can self-correct in one retry.
-
 ---
 
 ## Development History
@@ -284,8 +275,9 @@ Any ORD that does not start with one of these roots is immediately rejected.
 | v0.6.1 — Priority-Slot Writes | ✅ Done | `point.write` (in10, operator priority), `point.override` (in8, override priority), `point.write null` releases slot via `setStatusNull(true)` on `BStatusNumeric`; `component.invokeAction`, `station.restart`, `driver.discoverAndAdd`; `alarm.ack` (acknowledge by source ORD); `schedule.write` (set default output on `BWeeklySchedule`); 35 tools, 171 unit tests |
 | v0.6.2 — BACnet Discovery | ✅ Done | `bacnet.discover` — read-only BACnet stack device registry via `BBacnetNetwork.getDeviceList()` (all WhoIs/IAm-heard devices, unprovisioned included); `bacnet.devices` rewritten from stub to real child-component traversal; 5 new BACnet stubs; 36 tools, 185 unit tests |
 | v0.7.0 — Version Check + Hidden Properties | ✅ Done | Startup now logs detected Niagara version and emits warning text for 4.13+ stations: "EULA of the version 4.13 and greater forbids use of AI, see Section 3.1(q) for details."; `enabled` and `readOnly` hidden by default for cleaner Workbench UI; 36 tools, 185 unit tests |
-| v0.8.0 — Slot Sheet Cleanup | ✅ Done | Cleaner Workbench slot sheet; 36 tools, 185 unit tests |
-| v0.8+ — Roadmap | 🔜 Planned | Object model enrichment, batch read, relationship traversal — see roadmap |
+| v0.8.0 — Slot Sheet Cleanup | ✅ Done | Cleaner Workbench slot sheet; legacy declared properties removed in favor of `runtimeProfile` override path |
+| v0.8.1 — Autopilot Hardening + Write Gate Centralization | ✅ Current | Deterministic structured validation errors for wiresheet operations, schema introspection for client self-correction, and runtime-propagated `readOnly` toggle so write access is controlled only by BMcpService |
+| v0.9+ — Roadmap | 🔜 Planned | Object model enrichment, batch read, relationship traversal — see roadmap |
 
 
 ---

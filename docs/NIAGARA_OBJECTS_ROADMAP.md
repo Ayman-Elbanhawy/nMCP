@@ -95,11 +95,11 @@
 
 ---
 
-### v0.8.1 — Slot Sheet Cleanup ✅ Current
-- Removed legacy `eulaBlockEnabled` and `eulaOverridePassphrase` declared properties from `BMcpService`
-- Only `runtimeProfile` slot remains for the runtime compliance override path
-- Cleaner Workbench slot sheet: `readOnly` and `runtimeProfile` are the only two configurable hidden properties
-- 36 tools total; 185 unit tests, 0 failures
+### v0.8.1 — Autopilot Hardening + Write Gate Centralization ✅ Current
+- Deterministic structured validation errors for wiresheet plan/diff/apply (`code`, `message`, `path`, `hint`, `allowedValues`)
+- Added `nmcp.wiresheet.schema` for operation-shape introspection and one-retry client self-correction
+- Runtime `readOnly` gate now updates live through a mutable NiagaraSecurity policy propagated from BMcpService
+- Component allowlist failures now return structured security payloads (no fallback to unknown error)
 
 ---
 

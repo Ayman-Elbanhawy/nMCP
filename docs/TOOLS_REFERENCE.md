@@ -17,7 +17,7 @@ This reference matches current branch behavior for v0.8.1.
 
 ## Tool Inventory (v0.8.1)
 
-v0.8.1 includes slot sheet cleanup and current runtime behavior: legacy `eulaBlockEnabled` and `eulaOverridePassphrase` declared properties removed; only `runtimeProfile` override path remains.
+v0.8.1 includes slot sheet cleanup plus autopilot hardening updates: deterministic structured validation errors, wiresheet schema introspection for client recovery, and centralized runtime write gating via BMcpService `readOnly`.
 All tool names use the `nmcp.*` namespace.
 
 | Category | Tools |
@@ -71,7 +71,7 @@ curl -X POST http://127.0.0.1:8765/nmcp \
   "osVersion": "10.0",
   "overallCpuUsage": 7,
   "totalPhysicalMemory": 14626736,
-  "moduleVersion": "0.8.1",
+  "moduleVersion": "0.8.0",
   "readOnly": false
 }
 ```
@@ -948,7 +948,6 @@ Write-gated execution pass with `dryRun=true` default.
 - Link execution prefers explicit target-side `makeLink`/`linkTo` semantics and falls back to broader reflection only if needed.
 - `local:|foxwss:|station:|slot:/...` ORDs are normalized for allowlist and component resolution.
 - Runtime link repair populates relation ORD metadata when missing so Workbench link navigation can resolve endpoint hyperlinks.
-- Validation failures now return `isError=true` with deterministic guidance fields: `code`, `message`, `path`, `hint`, `allowedValues`.
 
 **Operation types:**
 
@@ -1000,21 +999,6 @@ Adds a composite interface pin to a `baja:Folder`, exposing an internal slot at 
 | `direction` | string | Yes | `in` (external → internal) or `out` (internal → external) |
 
 > **Note:** Pin names share the same slot namespace as child component names on the parent folder. Choose distinct names that describe the interface role (e.g. `TemperatureIn`, `CoolDemand`) rather than mirroring internal component names.
-
----
-
-### `nmcp.wiresheet.schema`
-
-Read-only introspection tool for autonomous clients. Returns the authoritative wiresheet contract used by server-side validation.
-
-**Arguments:** none.
-
-**Response:**
-- `operationTypes` — authoritative enum values (`createComponent`, `setSlot`, `link`, `addCompositePin`)
-- `operations` — per-type `required` and `optional` field lists
-- `minimalValidPayload` — minimal request example that passes validation
-
-This tool should be used by clients before generating wiresheet payloads to avoid retry loops caused by invalid type or missing-field errors.
 
 ---
 
@@ -1082,16 +1066,11 @@ curl -X POST http://127.0.0.1:8765/nmcp \
 
 ## Common Error Responses
 
-All tools return a consistent compatibility error field and may include additional structured fields:
+All tools return a consistent error shape when something goes wrong:
 
 ```json
 {
-  "error": "Path not in allowlisted roots: station:|slot:/System/Security",
-  "code": "NMCP_PATH_NOT_ALLOWLISTED",
-  "message": "Path not in allowlisted roots: station:|slot:/System/Security",
-  "path": "arguments.rootOrd",
-  "hint": "Use a rootOrd under one of the allowlisted roots.",
-  "allowedValues": []
+  "error": "ORD not within allowlisted roots: station:|slot:/System/Security"
 }
 ```
 
@@ -1107,12 +1086,3 @@ Common error messages:
 | `ORD is not a BWeeklySchedule: ...` | Schedule ORD points to a non-weekly schedule |
 | `Missing required argument: <name>` | Required argument missing from call |
 | `Drivers tree not accessible` | `/Drivers` ORD not resolvable |
-
-Wiresheet and write-gate flows use stable machine-readable codes for autopilot recovery:
-
-| Code | Meaning |
-|---|---|
-| `NMCP_VALIDATION_MISSING_FIELD` | Required payload field is missing |
-| `NMCP_VALIDATION_INVALID_ENUM` | Enum value is invalid (for example unsupported operation `type`) |
-| `NMCP_PATH_NOT_ALLOWLISTED` | Path blocked by allowlist policy |
-| `NMCP_WRITE_DISABLED` | Write blocked because service is in read-only mode |
