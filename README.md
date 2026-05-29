@@ -280,8 +280,7 @@ Any ORD that does not start with one of these roots is immediately rejected.
 | v0.7.0 — Version Check + Hidden Properties | ✅ Done | Startup now logs detected Niagara version and emits warning text for 4.13+ stations: "EULA of the version 4.13 and greater forbids use of AI, see Section 3.1(q) for details."; `enabled` and `readOnly` hidden by default for cleaner Workbench UI; 36 tools, 185 unit tests |
 | v0.8.0 — Slot Sheet Cleanup | ✅ Done | Cleaner Workbench slot sheet; legacy declared properties removed in favor of `runtimeProfile` override path |
 | v0.8.1 — Autopilot Hardening + Write Gate Centralization | ✅ Done | Deterministic structured validation errors for wiresheet operations, schema introspection for client self-correction, and runtime-propagated `readOnly` toggle so write access is controlled only by BMcpService |
-| v0.8.2 — Schema Export + Runtime BQL + History Provisioning | ✅ Current | Added `station.exportSchema` for station topology export, replaced BQL stub with runtime execution in `bql.query`, and added write-gated `history.provisionOnPoint` with Niagara 4.15-compatible connection-based history creation fallback |
-| v0.8.2 — Component Search Filtering Hardening | ✅ Current | `component.search` now normalizes filters (trim + casefold) and matches `typeFilter` against both short and qualified Niagara type names |
+| v0.8.2 — Schema Export + Runtime BQL + History Provisioning + Component Search Filtering Hardening| ✅ Current | Added `station.exportSchema` for station topology export, replaced BQL stub with runtime execution in `bql.query`, `component.search` now normalizes filters (trim + casefold) and matches `typeFilter` against both short and qualified Niagara type names, and added write-gated `history.provisionOnPoint` with Niagara 4.15-compatible connection-based history creation fallback |
 | v0.9+ — Roadmap | 🔜 Planned | Object model enrichment, batch read, relationship traversal — see roadmap |
 
 
