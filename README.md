@@ -31,7 +31,7 @@ See [NOTICES.md](NOTICES.md) for full details.
 # nMCP Module
 
 ![Niagara](https://img.shields.io/badge/Niagara-prior%20to%204.13-blue)
-![Version](https://img.shields.io/badge/version-0.8.0-orange)
+![Version](https://img.shields.io/badge/version-0.8.2-orange)
 ![MCP](https://img.shields.io/badge/nmcp-JSON--RPC%202.0-0A7CFF)
 ![Write Gated](https://img.shields.io/badge/Safety-Write--Gated-success)
 ![Claude Validated](https://img.shields.io/badge/Claude-Validated-7B61FF)
@@ -68,9 +68,9 @@ allowlist enforcement.
 | Document | Description |
 |---|---|
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | Build, install, start proxy, verify end-to-end |
-| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | All 36 tools with arguments, examples, and response shapes |
+| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | All 39 tools with arguments, examples, and response shapes |
 | [docs/NIAGARA_OBJECTS_ROADMAP.md](docs/NIAGARA_OBJECTS_ROADMAP.md) | Planned expansions (M1–M5) |
-| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | v0.4.0 through v0.8.0 implementation lessons and operational guidance |
+| [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | v0.4.0 through v0.8.2 implementation lessons and operational guidance |
 | [nMCP-client](https://github.com/makeitworkok/nMCP-client) | Lightweight client for calling nMCP tools from scripts and apps |
 
 ---
@@ -83,7 +83,7 @@ allowlist enforcement.
 | Claude MCP workflow | ✅ Validated |
 | Write gating via `readOnly` selector | ✅ Enforced |
 | Web auth proxy | ✅ Supported via companion client tooling |
-| Unit tests | ✅ 185 tests, 0 failures |
+| Unit tests | ✅ Passing |
 
 ---
 
@@ -199,7 +199,7 @@ Requires Java 8 or 11. No Niagara SDK installation needed — the project compil
 against included stubs.
 
 ```powershell
-# Run unit tests (185 tests, no Niagara runtime required)
+# Run unit tests (no Niagara runtime required)
 java -jar gradle\wrapper\gradle-wrapper.jar test
 
 # Build JAR
@@ -280,7 +280,8 @@ Any ORD that does not start with one of these roots is immediately rejected.
 | v0.7.0 — Version Check + Hidden Properties | ✅ Done | Startup now logs detected Niagara version and emits warning text for 4.13+ stations: "EULA of the version 4.13 and greater forbids use of AI, see Section 3.1(q) for details."; `enabled` and `readOnly` hidden by default for cleaner Workbench UI; 36 tools, 185 unit tests |
 | v0.8.0 — Slot Sheet Cleanup | ✅ Done | Cleaner Workbench slot sheet; legacy declared properties removed in favor of `runtimeProfile` override path |
 | v0.8.1 — Autopilot Hardening + Write Gate Centralization | ✅ Done | Deterministic structured validation errors for wiresheet operations, schema introspection for client self-correction, and runtime-propagated `readOnly` toggle so write access is controlled only by BMcpService |
-| v0.8.2 — Schema Export + Runtime BQL + History Provisioning | ✅ Current | Added `station.exportSchema` for station topology export, replaced BQL stub with runtime execution in `bql.query`, and added write-gated `history.provisionOnPoint` |
+| v0.8.2 — Schema Export + Runtime BQL + History Provisioning | ✅ Current | Added `station.exportSchema` for station topology export, replaced BQL stub with runtime execution in `bql.query`, and added write-gated `history.provisionOnPoint` with Niagara 4.15-compatible connection-based history creation fallback |
+| v0.8.2 — Component Search Filtering Hardening | ✅ Current | `component.search` now normalizes filters (trim + casefold) and matches `typeFilter` against both short and qualified Niagara type names |
 | v0.9+ — Roadmap | 🔜 Planned | Object model enrichment, batch read, relationship traversal — see roadmap |
 
 

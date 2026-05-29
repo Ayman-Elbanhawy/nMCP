@@ -1,7 +1,7 @@
 <!-- Copyright (c) 2026 Chris Favre. This cover is licensed under the MIT License. -->
 # Lessons Learned
 
-This document captures implementation and operational lessons accumulated across v0.4.0, v0.5.0, v0.5.1, v0.5.2, v0.6.x, v0.7.0, and v0.8.0.
+This document captures implementation and operational lessons accumulated across v0.4.0, v0.5.0, v0.5.1, v0.5.2, v0.6.x, v0.7.0, v0.8.0, and v0.8.2.
 
 ---
 
@@ -532,3 +532,34 @@ format to match native Niagara haystack conventions (`h4:*` marker slots, `baja:
   ```
 - Bean convention: `boolean` properties also need `isFoo()` returning the same value as `getFoo()`.
 - This applies equally to properties declared with `Flags.HIDDEN` — hidden means hidden from UI, not hidden from introspection.
+
+---
+
+## v0.8.2 — History Provisioning + Component Search Filtering
+
+## 39. `setConfig(BHistoryConfig)` alone may not materialize a history on Niagara 4.15
+
+- Live validation on Niagara 4.15.1.16 showed `BLocalHistoryDatabase.setConfig(BHistoryConfig)` can execute without producing a resolvable `BHistory` entry immediately.
+- The reliable creation path is the database connection API:
+  1. `getConnection(Context)`
+  2. `createHistory(BHistoryConfig)`
+  3. `exists(BHistoryId)`
+- `setConfig` should remain as a compatibility fallback, but connection-based creation should be attempted first when available.
+- Practical outcome: `nmcp.history.provisionOnPoint` moved from repeated `partial` outcomes to live-verified `configured` with `createdHistory=true` for `/mcp3/BBTestTemp`.
+
+## 40. History ID normalization must preserve both slash variants when probing runtime APIs
+
+- Some runtime calls accept `/device/history`, while others are sensitive to the unprefixed variant `device/history` during reflection-based discovery.
+- Use candidate sets for both forms when building IDs and when resolving created histories.
+- For `BHistoryId`, prefer `make(deviceName, historyName)` when possible (split on first slash after removing optional leading slash), then fall back to single-string `make(...)` paths.
+- This avoided false negatives where creation executed but subsequent lookup failed due to mismatched ID form.
+
+## 41. `component.search` type filtering should match both short and qualified type forms
+
+- Users naturally search with either short type terms (`numeric`) or qualified strings (`control:numeric`).
+- Matching only `Type.getTypeName()` misses qualified form filters even when the underlying component is the correct type.
+- Fix pattern:
+  1. Normalize filters with `trim()` + case folding.
+  2. Match `typeFilter` against both short type name and full type string.
+  3. Treat blank filters as null/no-filter.
+- Live validation after restart confirmed parity: both `numeric` and `control:numeric` returned the same component set.

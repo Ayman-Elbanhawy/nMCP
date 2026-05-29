@@ -4,6 +4,8 @@ package com.makeitworkok.nmcp;
 import javax.baja.naming.BOrd;
 import javax.baja.sys.Context;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,26 +61,34 @@ public final class NiagaraBqlTools {
                 return "{\"type\":\"object\","
                         + "\"properties\":{"
                         + "  \"query\":{\"type\":\"string\",\"description\":\"BQL SELECT query\"},"
-                        + "  \"limit\":{\"type\":\"integer\",\"description\":\"Max result rows\"}"
+                        + "  \"limit\":{\"type\":\"integer\",\"description\":\"Max result rows\"},"
+                        + "  \"debug\":{\"type\":\"boolean\",\"description\":\"Return BQL runtime/query object reflection details without executing\"}"
                         + "},"
                         + "\"required\":[\"query\"]}";
             }
 
             @Override public McpToolResult call(Map<String, Object> arguments, Context cx) {
-                String query = getStringArg(arguments, "query");
-                if (query == null || query.trim().isEmpty()) {
+                String inputQuery = getStringArg(arguments, "query");
+                if (inputQuery == null || inputQuery.trim().isEmpty()) {
                     return McpToolResult.error("Missing required argument: query");
                 }
+                String query = normalizeBqlQuery(inputQuery);
                 Integer limit = getIntArg(arguments, "limit");
+                boolean debug = getBooleanArg(arguments, "debug", false);
 
                 try {
                     security.checkBqlQuery(query);
                     int effectiveLimit = security.effectiveLimit(limit);
 
+                    if (debug) {
+                        return McpToolResult.success(createBqlDebugReport(inputQuery, query, effectiveLimit));
+                    }
+
                     QueryExecution execution = executeBql(query, effectiveLimit, cx);
 
                     Map<String, Object> result = NiagaraJson.obj(
-                            "query",   query,
+                            "query",   inputQuery,
+                            "normalizedQuery", query,
                             "limit",   effectiveLimit,
                         "count",   execution.rows.size(),
                         "rows",    execution.rows,
@@ -90,11 +100,42 @@ public final class NiagaraBqlTools {
                 } catch (NiagaraSecurity.McpSecurityException e) {
                     return McpToolResult.error(e.getMessage());
                 } catch (Exception e) {
-                    LOG.warning("nmcp.bql.query error: " + e.getMessage());
-                    return McpToolResult.error("BQL query error: " + e.getMessage());
+                    LOG.warning("nmcp.bql.query error: " + describeThrowable(e));
+                    return McpToolResult.error("BQL query error: " + describeThrowable(e));
                 }
             }
         };
+    }
+
+    private Map<String, Object> createBqlDebugReport(String inputQuery, String normalizedQuery, int effectiveLimit) {
+        Map<String, Object> report = NiagaraJson.obj(
+                "query", inputQuery,
+                "normalizedQuery", normalizedQuery,
+                "limit", Integer.valueOf(effectiveLimit),
+                "debug", Boolean.TRUE
+        );
+
+        Class<?> bqlClass = findBqlClass();
+        if (bqlClass == null) {
+            report.put("error", "BQL runtime class not found (tried javax.baja.bql and javax.baja.query variants)");
+            report.put("triedClasses", NiagaraJson.arr(
+                    "javax.baja.bql.BqlQuery",
+                    "javax.baja.bql.BBqlQuery",
+                    "javax.baja.bql.BQlQuery",
+                    "javax.baja.query.BBqlQuery",
+                    "javax.baja.query.BQlQuery"
+            ));
+            return report;
+        }
+
+        report.put("bqlRuntimeClass", describeClass(bqlClass));
+        try {
+            Object bqlQuery = createBqlQuery(bqlClass, normalizedQuery);
+            report.put("queryObject", describeClass(bqlQuery != null ? bqlQuery.getClass() : null));
+        } catch (Throwable e) {
+            report.put("creationError", describeThrowable(e));
+        }
+        return report;
     }
 
     private QueryExecution executeBql(String query, int effectiveLimit, Context cx) throws Exception {
@@ -166,6 +207,20 @@ public final class NiagaraBqlTools {
     }
 
     private CursorExecution executeQueryToCursor(Object bqlQuery, String query, Context cx) throws Exception {
+        CursorExecution directCursor = toCursorExecution(bqlQuery, bqlQuery.getClass().getName());
+        if (directCursor.cursor != null) {
+            return directCursor;
+        }
+
+        Method runWithCx = findMethod(bqlQuery.getClass(), "run", Context.class);
+        if (runWithCx != null) {
+            return toCursorExecution(runWithCx.invoke(bqlQuery, cx), bqlQuery.getClass().getName());
+        }
+        Method runNoArgs = findMethod(bqlQuery.getClass(), "run");
+        if (runNoArgs != null) {
+            return toCursorExecution(runNoArgs.invoke(bqlQuery), bqlQuery.getClass().getName());
+        }
+
         Method executeWithCx = findMethod(bqlQuery.getClass(), "execute", Context.class);
         if (executeWithCx != null) {
             return toCursorExecution(executeWithCx.invoke(bqlQuery, cx), bqlQuery.getClass().getName());
@@ -183,6 +238,15 @@ public final class NiagaraBqlTools {
             return toCursorExecution(cursorNoArgs.invoke(bqlQuery), bqlQuery.getClass().getName());
         }
 
+        Method toListMethod = findMethod(bqlQuery.getClass(), "toList");
+        if (toListMethod != null) {
+            return toCursorExecution(toListMethod.invoke(bqlQuery), bqlQuery.getClass().getName());
+        }
+        Method fetchAllMethod = findMethod(bqlQuery.getClass(), "fetchAll");
+        if (fetchAllMethod != null) {
+            return toCursorExecution(fetchAllMethod.invoke(bqlQuery), bqlQuery.getClass().getName());
+        }
+
         CursorExecution engineCursor = executeViaBqlEngine(query, cx);
         if (engineCursor != null) {
             return engineCursor;
@@ -192,7 +256,11 @@ public final class NiagaraBqlTools {
         if (ordCursor != null) {
             return ordCursor;
         }
-        throw new IllegalStateException("BQL query object does not expose execute()/cursor() methods");
+
+        Map<String, Object> diagnostics = describeClass(bqlQuery.getClass());
+        LOG.warning("BQL query object diagnostics: " + NiagaraJson.buildObject(diagnostics));
+        throw new IllegalStateException("BQL query object does not expose a supported execution method "
+                + "(execute/cursor/run/toList/fetchAll). diagnostics=" + NiagaraJson.buildObject(diagnostics));
     }
 
     private CursorExecution executeViaBqlEngine(String query, Context cx) {
@@ -220,6 +288,14 @@ public final class NiagaraBqlTools {
             if (executeNoArgs != null) {
                 return toCursorExecution(executeNoArgs.invoke(engine), engineClass.getName());
             }
+
+            Method setQuery = findMethod(engineClass, "setQuery", Object.class);
+            Method fire = findMethod(engineClass, "fire");
+            if (setQuery != null && fire != null) {
+                setQuery.invoke(engine, queryOrd);
+                return toCursorExecution(fire.invoke(engine), engineClass.getName());
+            }
+
             return null;
         } catch (Throwable e) {
             LOG.fine("BQL engine fallback failed: " + e.getMessage());
@@ -327,6 +403,119 @@ public final class NiagaraBqlTools {
         }
     }
 
+    private String normalizeBqlQuery(String rawQuery) {
+        if (rawQuery == null) {
+            return "";
+        }
+        String trimmed = rawQuery.trim();
+        String lower = trimmed.toLowerCase();
+        int ordIndex = lower.lastIndexOf("|bql:");
+        if (ordIndex >= 0) {
+            return trimmed.substring(ordIndex + 5).trim();
+        }
+        if (lower.startsWith("bql:")) {
+            return trimmed.substring(4).trim();
+        }
+        return trimmed;
+    }
+
+    private Map<String, Object> describeClass(Class<?> type) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (type == null) {
+            out.put("className", "<unknown>");
+            out.put("superclasses", new ArrayList<Object>());
+            out.put("interfaces", new ArrayList<Object>());
+            out.put("publicMethods", new ArrayList<Object>());
+            return out;
+        }
+        out.put("className", type.getName());
+        out.put("superclasses", describeSuperclasses(type));
+        out.put("interfaces", describeInterfaces(type));
+        out.put("publicMethods", describePublicMethods(type));
+        return out;
+    }
+
+    private List<Object> describeSuperclasses(Class<?> type) {
+        List<Object> names = new ArrayList<>();
+        Class<?> current = type != null ? type.getSuperclass() : null;
+        while (current != null) {
+            names.add(current.getName());
+            current = current.getSuperclass();
+        }
+        return names;
+    }
+
+    private List<Object> describeInterfaces(Class<?> type) {
+        List<String> names = new ArrayList<>();
+        collectInterfaceNames(type, names);
+        Collections.sort(names);
+        List<Object> out = new ArrayList<>();
+        out.addAll(names);
+        return out;
+    }
+
+    private void collectInterfaceNames(Class<?> type, List<String> names) {
+        if (type == null) {
+            return;
+        }
+        Class<?>[] interfaces = type.getInterfaces();
+        for (int i = 0; i < interfaces.length; i++) {
+            String name = interfaces[i].getName();
+            if (!names.contains(name)) {
+                names.add(name);
+            }
+            collectInterfaceNames(interfaces[i], names);
+        }
+        collectInterfaceNames(type.getSuperclass(), names);
+    }
+
+    private List<Object> describePublicMethods(Class<?> type) {
+        List<Object> signatures = new ArrayList<>();
+        if (type == null) {
+            return signatures;
+        }
+        Method[] methods = type.getMethods();
+        List<String> methodStrings = new ArrayList<>();
+        for (int i = 0; i < methods.length; i++) {
+            Method m = methods[i];
+            StringBuilder sb = new StringBuilder();
+            sb.append(m.getReturnType().getName()).append(" ");
+            sb.append(m.getDeclaringClass().getName()).append(".");
+            sb.append(m.getName()).append("(");
+            Class<?>[] params = m.getParameterTypes();
+            for (int p = 0; p < params.length; p++) {
+                if (p > 0) {
+                    sb.append(", ");
+                }
+                sb.append(params[p].getName());
+            }
+            sb.append(")");
+            methodStrings.add(sb.toString());
+        }
+        Collections.sort(methodStrings, new Comparator<String>() {
+            @Override public int compare(String a, String b) {
+                return a.compareTo(b);
+            }
+        });
+        signatures.addAll(methodStrings);
+        return signatures;
+    }
+
+    private String describeThrowable(Throwable t) {
+        if (t == null) {
+            return "unknown error";
+        }
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            message = "<no message>";
+        }
+        return root.getClass().getName() + ": " + message;
+    }
+
     private Object serializeValue(Object value, int depth) {
         if (value == null) {
             return null;
@@ -431,6 +620,13 @@ public final class NiagaraBqlTools {
             try { return Integer.parseInt((String) v); } catch (NumberFormatException ignored) {}
         }
         return null;
+    }
+
+    private boolean getBooleanArg(Map<String, Object> args, String key, boolean defaultValue) {
+        Object v = args.get(key);
+        if (v == null) return defaultValue;
+        if (v instanceof Boolean) return ((Boolean) v).booleanValue();
+        return "true".equalsIgnoreCase(String.valueOf(v));
     }
 
     private static final class QueryExecution {

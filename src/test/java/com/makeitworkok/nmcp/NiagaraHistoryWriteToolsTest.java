@@ -83,4 +83,33 @@ class NiagaraHistoryWriteToolsTest {
         assertTrue(schema.contains("\"sampleIntervalMs\""));
         assertTrue(schema.contains("\"retentionCount\""));
     }
+
+    @Test
+    void provision_debugReturnsReflectionPayload() {
+        NiagaraHistoryWriteTools tools = new NiagaraHistoryWriteTools(writeSecurity());
+        Map<String, Object> args = new HashMap<String, Object>();
+        args.put("pointOrd", "station:|slot:/Drivers/Point1");
+        args.put("historyId", "ZoneTempHistory");
+        args.put("debug", Boolean.TRUE);
+
+        McpToolResult result = tools.tools().get(0).call(args, null);
+
+        assertFalse(result.isError());
+        assertTrue(result.getContent().contains("\"historyService\""));
+        assertTrue(result.getContent().contains("\"existingHistoryFound\""));
+        assertTrue(result.getContent().contains("\"pointOrd\":\"station:|slot:/Drivers/Point1\""));
+    }
+
+    @Test
+    void provision_doesNotHardFailOnUnresolvedHistoryObject() {
+        NiagaraHistoryWriteTools tools = new NiagaraHistoryWriteTools(writeSecurity());
+        Map<String, Object> args = new HashMap<String, Object>();
+        args.put("pointOrd", "station:|slot:/Drivers/Point1");
+        args.put("historyId", "/mcp3/NonExistingHistoryForTest");
+
+        McpToolResult result = tools.tools().get(0).call(args, null);
+
+        assertTrue(result.isError());
+        assertFalse(result.getErrorMessage().contains("History not found and could not be created"));
+    }
 }

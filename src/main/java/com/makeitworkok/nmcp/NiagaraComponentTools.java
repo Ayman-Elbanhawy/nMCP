@@ -12,6 +12,7 @@ import javax.baja.naming.BOrd;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Logger;
 
@@ -321,8 +322,8 @@ public final class NiagaraComponentTools {
             }
 
             @Override public McpToolResult call(Map<String, Object> arguments, Context cx) {
-                String nameFilter = getStringArg(arguments, "nameFilter");
-                String typeFilter = getStringArg(arguments, "typeFilter");
+                String nameFilter = normalizeFilter(getStringArg(arguments, "nameFilter"));
+                String typeFilter = normalizeFilter(getStringArg(arguments, "typeFilter"));
                 String root = getStringArg(arguments, "root");
                 if (root == null || root.isEmpty()) {
                     root = "station:|slot:/Drivers";
@@ -421,16 +422,17 @@ public final class NiagaraComponentTools {
         try {
             String typeName = "";
             try { typeName = comp.getType() != null ? comp.getType().getTypeName() : ""; } catch (Throwable ignored) {}
+            String typeSpec = "";
+            try { typeSpec = comp.getType() != null ? String.valueOf(comp.getType()) : ""; } catch (Throwable ignored) {}
             String displayName = "";
             try { displayName = comp.getDisplayName(cx); } catch (Throwable ignored) {}
             String name = "";
             try { name = comp.getName(); } catch (Throwable ignored) {}
 
-            boolean nameMatch = nameFilter == null || nameFilter.isEmpty()
-                    || displayName.toLowerCase().contains(nameFilter.toLowerCase())
-                    || name.toLowerCase().contains(nameFilter.toLowerCase());
-            boolean typeMatch = typeFilter == null || typeFilter.isEmpty()
-                    || typeName.toLowerCase().contains(typeFilter.toLowerCase());
+            boolean nameMatch = matchesFilter(displayName, nameFilter)
+                || matchesFilter(name, nameFilter);
+            boolean typeMatch = matchesFilter(typeName, typeFilter)
+                || matchesFilter(typeSpec, typeFilter);
 
             if (nameMatch && typeMatch) {
                 out.add(NiagaraJson.obj(
@@ -456,6 +458,27 @@ public final class NiagaraComponentTools {
         } catch (Throwable e) {
             LOG.warning("searchComponents error at " + compOrd + ": " + e.getMessage());
         }
+    }
+
+    static String normalizeFilter(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        return trimmed.toLowerCase(Locale.ROOT);
+    }
+
+    static boolean matchesFilter(String value, String filter) {
+        if (filter == null) {
+            return true;
+        }
+        if (value == null) {
+            return false;
+        }
+        return value.toLowerCase(Locale.ROOT).contains(filter);
     }
 
     private Map<String, Object> buildComponentSummary(BComponent comp, Context cx) {

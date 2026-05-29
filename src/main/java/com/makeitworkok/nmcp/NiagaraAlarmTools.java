@@ -12,8 +12,10 @@ import javax.baja.sys.BAbsTime;
 import javax.baja.sys.Cursor;
 import javax.baja.sys.Context;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.logging.Logger;
 
 /**
@@ -149,11 +151,12 @@ public final class NiagaraAlarmTools {
                     return McpToolResult.error("Missing required argument: sourceOrd");
                 }
                 String sourceOrd = (String) sourceOrdArg;
+                String normalizedSourceOrd = normalizeAlarmSourceOrd(sourceOrd);
                 String note = arguments.get("note") instanceof String
                         ? (String) arguments.get("note") : "Acknowledged via MCP";
                 try {
                     security.checkReadOnly();
-                    security.checkAllowlist(sourceOrd);
+                    security.checkAllowlist(normalizedSourceOrd);
 
                     Object svc = BOrd.make("station:|slot:/Services/AlarmService").get(null, cx);
                     if (!(svc instanceof BAlarmService)) {
@@ -162,36 +165,63 @@ public final class NiagaraAlarmTools {
                     BAlarmDatabase db = ((BAlarmService) svc).getAlarmDb();
                     if (db == null) return McpToolResult.error("Alarm database not available");
 
-                    BOrdList sourceList = BOrdList.make(sourceOrd);
                     AlarmDbConnection conn = null;
                     Cursor cursor = null;
                     int acked = 0;
+                    Set<String> ackedRecords = new HashSet<>();
                     try {
                         conn = db.getDbConnection(cx);
                         if (conn == null) return McpToolResult.error("Alarm database connection failed");
-                        cursor = conn.getAlarmsForSource(sourceList);
-                        if (cursor == null) {
-                            return McpToolResult.success(NiagaraJson.obj(
-                                    "sourceOrd", sourceOrd, "acknowledged", 0,
-                                    "detail", "no alarms found for source"));
-                        }
-                        while (cursor.next()) {
-                            Object row = cursor.get();
-                            if (!(row instanceof BAlarmRecord)) continue;
-                            BAlarmRecord record = (BAlarmRecord) row;
-                            // Only ack if pending
-                            try {
-                                BAckState state = record.getAckState();
-                                if (state != null && "Pending Ack".equals(state.toString())) {
-                                    acknowledgeRecord(record, note, cx);
-                                    acked++;
-                                }
-                            } catch (Throwable e) {
-                                // If we can't read ack state, try to ack anyway
+
+                        String[] sourceCandidates = buildSourceOrdCandidates(sourceOrd, normalizedSourceOrd);
+                        for (int i = 0; i < sourceCandidates.length; i++) {
+                            String candidate = sourceCandidates[i];
+                            if (candidate == null || candidate.trim().isEmpty()) {
+                                continue;
+                            }
+
+                            cursor = conn.getAlarmsForSource(BOrdList.make(candidate));
+                            if (cursor == null) {
+                                continue;
+                            }
+
+                            while (cursor.next()) {
+                                Object row = cursor.get();
+                                if (!(row instanceof BAlarmRecord)) continue;
+                                BAlarmRecord record = (BAlarmRecord) row;
+
+                                String dedupeKey;
                                 try {
-                                    acknowledgeRecord(record, note, cx);
-                                    acked++;
-                                } catch (Throwable ignored2) {}
+                                    dedupeKey = record.toString();
+                                } catch (Throwable ignored) {
+                                    dedupeKey = String.valueOf(System.identityHashCode(record));
+                                }
+
+                                if (ackedRecords.contains(dedupeKey)) {
+                                    continue;
+                                }
+
+                                try {
+                                    BAckState state = record.getAckState();
+                                    if (state != null && "Pending Ack".equals(state.toString())) {
+                                        acknowledgeRecord(record, note, cx);
+                                        acked++;
+                                        ackedRecords.add(dedupeKey);
+                                    }
+                                } catch (Throwable e) {
+                                    // If we can't read ack state, try to ack anyway.
+                                    try {
+                                        acknowledgeRecord(record, note, cx);
+                                        acked++;
+                                        ackedRecords.add(dedupeKey);
+                                    } catch (Throwable ignored2) {}
+                                }
+                            }
+
+                            try { cursor.close(); } catch (Throwable ignored) {}
+                            cursor = null;
+                            if (acked > 0) {
+                                break;
                             }
                         }
                     } finally {
@@ -199,7 +229,9 @@ public final class NiagaraAlarmTools {
                         if (conn != null)   try { conn.close();   } catch (Throwable ignored) {}
                     }
                     return McpToolResult.success(NiagaraJson.obj(
-                            "sourceOrd", sourceOrd, "acknowledged", acked,
+                            "sourceOrd", sourceOrd,
+                            "normalizedSourceOrd", normalizedSourceOrd,
+                            "acknowledged", acked,
                             "note", note));
                 } catch (NiagaraSecurity.McpSecurityException e) {
                     return McpToolResult.error(e.getMessage());
@@ -322,5 +354,31 @@ public final class NiagaraAlarmTools {
             try { return Integer.parseInt((String) v); } catch (NumberFormatException ignored) {}
         }
         return null;
+    }
+
+    static String normalizeAlarmSourceOrd(String ord) {
+        if (ord == null) return null;
+        String s = ord.trim();
+        if (s.startsWith("local:|foxwss:|")) s = s.substring("local:|foxwss:|".length());
+        else if (s.startsWith("foxwss:|")) s = s.substring("foxwss:|".length());
+        else if (s.startsWith("local:|")) s = s.substring("local:|".length());
+
+        if (s.startsWith("station:|station:|")) {
+            s = "station:|" + s.substring("station:|station:|".length());
+        }
+        return s;
+    }
+
+    private static String[] buildSourceOrdCandidates(String rawSourceOrd, String normalizedSourceOrd) {
+        List<String> out = new ArrayList<>();
+        addUnique(out, normalizedSourceOrd);
+        addUnique(out, rawSourceOrd);
+        addUnique(out, normalizeAlarmSourceOrd(rawSourceOrd));
+        return out.toArray(new String[out.size()]);
+    }
+
+    private static void addUnique(List<String> list, String value) {
+        if (value == null || value.trim().isEmpty()) return;
+        if (!list.contains(value)) list.add(value);
     }
 }

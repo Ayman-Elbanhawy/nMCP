@@ -71,7 +71,7 @@ curl -X POST http://127.0.0.1:8765/nmcp \
   "osVersion": "10.0",
   "overallCpuUsage": 7,
   "totalPhysicalMemory": 14626736,
-  "moduleVersion": "0.8.0",
+  "moduleVersion": "0.8.2",
   "readOnly": false
 }
 ```
@@ -195,14 +195,14 @@ curl -X POST http://127.0.0.1:8765/nmcp \
 
 ### `nmcp.component.search`
 
-Searches all components under a root ORD by display name and/or type substring.
+Searches all components under a root ORD by display name/name and/or type substring.
 
 **Arguments:**
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `nameFilter` | string | No | Case-insensitive substring on component name/display name |
-| `typeFilter` | string | No | Case-insensitive substring on type name |
+| `nameFilter` | string | No | Case-insensitive substring on component name/display name (leading/trailing whitespace ignored) |
+| `typeFilter` | string | No | Case-insensitive substring on type name; matches both short and qualified type names (for example `NumericWritable` and `control:numeric`) |
 | `root` | string | No | Root ORD to search (default `station:|slot:/Drivers`) |
 | `limit` | integer | No | Max matches (default 50, capped by `maxResults`) |
 
@@ -451,6 +451,11 @@ curl -X POST http://127.0.0.1:8765/nmcp \
 - `alreadyConfigured` — point already appears configured for the requested history.
 - `partial` — call executed but no concrete setter/slot path was applied on this point/runtime combination.
 
+**Runtime behavior notes:**
+- On Niagara 4.15, history creation now prefers the history database connection path (`getConnection(...).createHistory(BHistoryConfig)`) and verifies existence before attachment attempts.
+- The tool retains compatibility fallbacks (`setConfig(BHistoryConfig)` and service/db create method scans) for mixed runtime APIs.
+- `details` is intentionally diagnostic and may include creation strategy notes to aid autonomous clients.
+
 **Arguments:**
 
 | Name | Type | Required | Description |
@@ -474,15 +479,15 @@ curl -X POST http://127.0.0.1:8765/nmcp \
 ```json
 {
   "status": "configured",
-  "createdHistory": false,
+  "createdHistory": true,
   "pointOrd": "station:|slot:/Drivers/Net/Device/ZoneTemp",
-  "historyId": "ZoneTempHistory",
+  "historyId": "/mcp3/ZoneTempHistory",
   "enabled": true,
   "sampleIntervalMs": 60000,
   "retentionCount": null,
   "details": [
-    "setHistoryId applied",
-    "history enabled flag applied"
+    "history create: connection.createHistory invoked for /mcp3/ZoneTempHistory",
+    "history create: connection.exists true for /mcp3/ZoneTempHistory"
   ]
 }
 ```

@@ -6,6 +6,7 @@ import javax.baja.sys.BComponent;
 import javax.baja.sys.Context;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
@@ -169,7 +170,8 @@ public final class NiagaraWriteTools {
                         + "\"properties\":{"
                         + "  \"ord\":{\"type\":\"string\",\"description\":\"Component ORD\"},"
                         + "  \"action\":{\"type\":\"string\",\"description\":\"Action name (e.g. 'active', 'disable', 'reset')\"},"
-                        + "  \"arg\":{\"description\":\"Optional argument value for the action\"}"
+                        + "  \"arg\":{\"description\":\"Optional argument value for the action\"},"
+                        + "  \"debug\":{\"type\":\"boolean\",\"description\":\"Return action-resolution diagnostics without invoking the action\"}"
                         + "},"
                         + "\"required\":[\"ord\",\"action\"]}";
             }
@@ -180,9 +182,14 @@ public final class NiagaraWriteTools {
                 if (ord == null)    return McpToolResult.error("Missing required argument: ord");
                 if (action == null) return McpToolResult.error("Missing required argument: action");
                 Object arg = arguments.get("arg");
+                boolean debug = asBoolean(arguments.get("debug"), false);
                 try {
-                    security.checkReadOnly();
                     security.checkAllowlist(ord);
+                    if (debug) {
+                        return McpToolResult.success(createActionDebugReport(ord, action, arg, cx));
+                    }
+
+                    security.checkReadOnly();
                     Object obj = BOrd.make(localOrd(ord)).get(null, cx);
                     if (!(obj instanceof BComponent)) {
                         return McpToolResult.error("ORD did not resolve to a component: " + ord);
@@ -240,10 +247,35 @@ public final class NiagaraWriteTools {
                         Class<?> sysClass = Class.forName("javax.baja.sys.Sys");
                         Object station = sysClass.getMethod("getStation").invoke(null);
                         if (station != null) {
-                            Method m = station.getClass().getMethod("restart", Context.class);
-                            m.invoke(station, cx);
-                            restarted = true;
-                            detail = "restart invoked";
+                            Method[] methods = station.getClass().getMethods();
+                            for (Method method : methods) {
+                                if (!"restart".equals(method.getName())) {
+                                    continue;
+                                }
+                                Class<?>[] params = method.getParameterTypes();
+                                try {
+                                    if (params.length == 0) {
+                                        method.invoke(station);
+                                        restarted = true;
+                                        detail = "restart invoked via restart()";
+                                        break;
+                                    }
+                                    if (params.length == 1 && Context.class.isAssignableFrom(params[0])) {
+                                        method.invoke(station, cx);
+                                        restarted = true;
+                                        detail = "restart invoked via restart(Context)";
+                                        break;
+                                    }
+                                    if (params.length == 1) {
+                                        method.invoke(station, new Object[] { null });
+                                        restarted = true;
+                                        detail = "restart invoked via restart(Object)";
+                                        break;
+                                    }
+                                } catch (Throwable e) {
+                                    detail = "restart invocation failed: " + e.getMessage();
+                                }
+                            }
                         }
                     } catch (Throwable e) {
                         detail = "restart invocation failed: " + e.getMessage();
@@ -380,6 +412,21 @@ public final class NiagaraWriteTools {
     private String invokeComponentAction(BComponent comp, String actionName, Object arg, Context cx) {
         Object barg = arg != null ? toBValue(arg) : null;
 
+        if (isReleaseAction(actionName)) {
+            String releaseResult = invokePointWrite(comp, "in8", null, cx);
+            if (!releaseResult.startsWith("no suitable write method found")) {
+                return "released override via in8 (" + releaseResult + ")";
+            }
+        }
+
+        Object actionSlot = findActionSlot(comp, actionName);
+        if (actionSlot != null) {
+            String slotResult = invokeActionSlot(actionSlot, barg, cx);
+            if (slotResult != null) {
+                return slotResult;
+            }
+        }
+
         // Try invoke(String, BValue, Context)
         for (Method m : comp.getClass().getMethods()) {
             if ("invoke".equals(m.getName())) {
@@ -437,6 +484,184 @@ public final class NiagaraWriteTools {
         }
 
         return "no suitable invoke method found for action '" + actionName + "'";
+    }
+
+    private boolean isReleaseAction(String actionName) {
+        if (actionName == null) {
+            return false;
+        }
+        String normalized = actionName.trim().toLowerCase();
+        return "release".equals(normalized)
+                || "clear".equals(normalized)
+                || "reset".equals(normalized)
+                || "deactivate".equals(normalized)
+                || "unoverride".equals(normalized);
+    }
+
+    private Map<String, Object> createActionDebugReport(String ord, String actionName, Object arg, Context cx) {
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("ord", ord);
+        report.put("action", actionName);
+        report.put("argType", arg == null ? "null" : arg.getClass().getName());
+
+        try {
+            Object obj = BOrd.make(localOrd(ord)).get(null, cx);
+            report.put("componentClass", obj == null ? "<null>" : obj.getClass().getName());
+            report.put("componentMethods", describePublicMethods(obj != null ? obj.getClass() : null, actionName));
+
+            Object actionSlot = obj instanceof BComponent ? findActionSlot((BComponent) obj, actionName) : null;
+            if (actionSlot != null) {
+                report.put("actionSlotClass", actionSlot.getClass().getName());
+                report.put("actionSlotMethods", describePublicMethods(actionSlot.getClass(), actionName));
+            } else {
+                report.put("actionSlotClass", "<not found>");
+                report.put("actionSlotMethods", new ArrayList<Object>());
+            }
+        } catch (Throwable e) {
+            report.put("debugError", describeThrowable(e));
+        }
+
+        return report;
+    }
+
+    private Object findActionSlot(BComponent comp, String actionName) {
+        if (comp == null || actionName == null) {
+            return null;
+        }
+
+        Object slot = invokeNoArgStringGetter(comp, "getSlot", actionName);
+        if (slot == null) {
+            slot = invokeNoArgStringGetter(comp, "getProperty", actionName);
+        }
+        if (slot == null) {
+            slot = invokeNoArgStringGetter(comp, "getAction", actionName);
+        }
+
+        if (slot instanceof javax.baja.sys.Slot) {
+            javax.baja.sys.Slot typedSlot = (javax.baja.sys.Slot) slot;
+            if (typedSlot.isAction()) {
+                return typedSlot;
+            }
+        }
+        return slot;
+    }
+
+    private Object invokeNoArgStringGetter(Object target, String methodName, String value) {
+        if (target == null || methodName == null) {
+            return null;
+        }
+        for (Method method : target.getClass().getMethods()) {
+            if (!methodName.equals(method.getName())) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1 || !String.class.equals(params[0])) {
+                continue;
+            }
+            try {
+                return method.invoke(target, value);
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private String invokeActionSlot(Object actionSlot, Object barg, Context cx) {
+        if (actionSlot == null) {
+            return null;
+        }
+
+        String[] methodNames = new String[] {"invoke", "doAction", "run", "call"};
+        for (String methodName : methodNames) {
+            for (Method m : actionSlot.getClass().getMethods()) {
+                if (!methodName.equals(m.getName())) {
+                    continue;
+                }
+                Class<?>[] params = m.getParameterTypes();
+                try {
+                    if (params.length == 0) {
+                        m.invoke(actionSlot);
+                        return "invoked action slot via " + methodName + "()";
+                    }
+                    if (params.length == 1 && Context.class.isAssignableFrom(params[0])) {
+                        m.invoke(actionSlot, cx);
+                        return "invoked action slot via " + methodName + "(Context)";
+                    }
+                    if (params.length == 1 && isValueType(params[0])) {
+                        Object converted = convertValueForType(barg, params[0]);
+                        if (converted == UNSET) {
+                            continue;
+                        }
+                        m.invoke(actionSlot, converted);
+                        return "invoked action slot via " + methodName + "(Value)";
+                    }
+                    if (params.length == 2 && isValueType(params[0]) && Context.class.isAssignableFrom(params[1])) {
+                        Object converted = convertValueForType(barg, params[0]);
+                        if (converted == UNSET) {
+                            continue;
+                        }
+                        m.invoke(actionSlot, converted, cx);
+                        return "invoked action slot via " + methodName + "(Value, Context)";
+                    }
+                } catch (Throwable e) {
+                    LOG.fine(methodName + " action-slot invocation failed: " + e);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private boolean isValueType(Class<?> type) {
+        if (type == null) {
+            return false;
+        }
+        return !type.isPrimitive() && !Context.class.isAssignableFrom(type)
+                && !javax.baja.sys.Slot.class.isAssignableFrom(type)
+                && !BComponent.class.isAssignableFrom(type);
+    }
+
+    private List<Object> describePublicMethods(Class<?> type, String filter) {
+        List<Object> out = new ArrayList<>();
+        if (type == null) {
+            return out;
+        }
+        String normalizedFilter = filter == null ? null : filter.trim().toLowerCase();
+        for (Method method : type.getMethods()) {
+            String methodName = method.getName().toLowerCase();
+            if (normalizedFilter != null && !normalizedFilter.isEmpty() && !methodName.contains(normalizedFilter)) {
+                continue;
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append(method.getReturnType().getName()).append(" ");
+            sb.append(method.getDeclaringClass().getName()).append(".");
+            sb.append(method.getName()).append("(");
+            Class<?>[] params = method.getParameterTypes();
+            for (int i = 0; i < params.length; i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(params[i].getName());
+            }
+            sb.append(")");
+            out.add(sb.toString());
+        }
+        return out;
+    }
+
+    private String describeThrowable(Throwable t) {
+        if (t == null) {
+            return "unknown error";
+        }
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            message = "<no message>";
+        }
+        return root.getClass().getName() + ": " + message;
     }
 
     /**
@@ -542,6 +767,89 @@ public final class NiagaraWriteTools {
         } catch (Throwable ignored) {}
         return null;
     }
+
+    private Object convertValueForType(Object value, Class<?> targetType) {
+        if (targetType == null) {
+            return UNSET;
+        }
+        if (value == null) {
+            if (!targetType.isPrimitive()) {
+                return null;
+            }
+            return UNSET;
+        }
+        if (targetType.isAssignableFrom(value.getClass())) {
+            return value;
+        }
+        if (String.class.equals(targetType)) {
+            return String.valueOf(value);
+        }
+        if (Integer.class.equals(targetType) || Integer.TYPE.equals(targetType)) {
+            Integer i = asInt(value);
+            return i != null ? i : UNSET;
+        }
+        if (Long.class.equals(targetType) || Long.TYPE.equals(targetType)) {
+            Long l = asLong(value);
+            return l != null ? l : UNSET;
+        }
+        if (Double.class.equals(targetType) || Double.TYPE.equals(targetType)) {
+            Double d = asDouble(value);
+            return d != null ? d : UNSET;
+        }
+        if (Float.class.equals(targetType) || Float.TYPE.equals(targetType)) {
+            Double d = asDouble(value);
+            return d != null ? Float.valueOf(d.floatValue()) : UNSET;
+        }
+        if (Boolean.class.equals(targetType) || Boolean.TYPE.equals(targetType)) {
+            return Boolean.valueOf(asBoolean(value, false));
+        }
+        return UNSET;
+    }
+
+    private static boolean asBoolean(Object v, boolean defaultValue) {
+        if (v == null) {
+            return defaultValue;
+        }
+        if (v instanceof Boolean) {
+            return ((Boolean) v).booleanValue();
+        }
+        return "true".equalsIgnoreCase(String.valueOf(v));
+    }
+
+    private static Integer asInt(Object v) {
+        if (v instanceof Number) return Integer.valueOf(((Number) v).intValue());
+        if (v instanceof String) {
+            try {
+                return Integer.valueOf(Integer.parseInt((String) v));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Long asLong(Object v) {
+        if (v instanceof Number) return Long.valueOf(((Number) v).longValue());
+        if (v instanceof String) {
+            try {
+                return Long.valueOf(Long.parseLong((String) v));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Double asDouble(Object v) {
+        if (v instanceof Number) return Double.valueOf(((Number) v).doubleValue());
+        if (v instanceof String) {
+            try {
+                return Double.valueOf(Double.parseDouble((String) v));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static final Object UNSET = new Object();
 
     private static String localOrd(String ord) {
         if (ord == null) return null;

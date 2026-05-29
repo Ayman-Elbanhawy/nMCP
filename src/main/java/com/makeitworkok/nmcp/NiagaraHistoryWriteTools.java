@@ -7,6 +7,7 @@ import javax.baja.sys.BComponent;
 import javax.baja.sys.Context;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +49,8 @@ public final class NiagaraHistoryWriteTools {
                         + "  \"enabled\":{\"type\":\"boolean\",\"description\":\"Enable history on the point (default true)\"},"
                         + "  \"sampleIntervalMs\":{\"type\":\"integer\",\"description\":\"Optional sample interval in ms\"},"
                         + "  \"retentionCount\":{\"type\":\"integer\",\"description\":\"Optional retention/capacity count\"},"
-                        + "  \"typeOptions\":{\"type\":\"object\",\"description\":\"Type-specific option bag\"}"
+                        + "  \"typeOptions\":{\"type\":\"object\",\"description\":\"Type-specific option bag\"},"
+                        + "  \"debug\":{\"type\":\"boolean\",\"description\":\"Return HistoryService reflection details without mutating the station\"}"
                         + "},"
                         + "\"required\":[\"pointOrd\",\"historyId\"]}";
             }
@@ -66,36 +68,43 @@ public final class NiagaraHistoryWriteTools {
                 boolean enabled = asBoolean(arguments.get("enabled"), true);
                 Integer sampleIntervalMs = asInt(arguments.get("sampleIntervalMs"));
                 Integer retentionCount = asInt(arguments.get("retentionCount"));
+                boolean debug = asBoolean(arguments.get("debug"), false);
                 Map<String, Object> typeOptions = asObject(arguments.get("typeOptions"));
                 if (typeOptions == null) {
                     typeOptions = new LinkedHashMap<>();
                 }
 
                 try {
-                    security.checkReadOnly();
                     String normalizedPointOrd = localOrd(pointOrd);
                     security.checkAllowlist(normalizedPointOrd);
+
+                    if (debug) {
+                        return McpToolResult.success(createHistoryDebugReport(normalizedPointOrd, historyId, cx));
+                    }
+
+                    security.checkReadOnly();
 
                     Object resolved = BOrd.make(normalizedPointOrd).get(null, cx);
                     if (!(resolved instanceof BComponent)) {
                         return McpToolResult.error("pointOrd did not resolve to a component: " + normalizedPointOrd);
                     }
                     BComponent point = (BComponent) resolved;
+                    List<Object> applyDetails = new ArrayList<>();
 
-                    BHistory history = NiagaraHistoryTools.findHistory(historyId, cx);
+                    BHistory history = findHistoryByCandidates(historyId, cx);
                     boolean created = false;
                     if (history == null) {
-                        history = tryCreateHistory(historyId, cx);
+                        history = tryCreateHistory(historyId, point, applyDetails, cx);
                         created = history != null;
-                    }
-                    if (history == null) {
-                        return McpToolResult.error("History not found and could not be created: " + historyId);
                     }
 
                     boolean alreadyConfigured = isAlreadyConfigured(point, historyId);
-                    List<Object> applyDetails = new ArrayList<>();
                     boolean attached = attachHistoryToPoint(point, history, historyId, enabled, applyDetails, cx);
                     boolean configured = applyHistoryConfiguration(point, sampleIntervalMs, retentionCount, typeOptions, applyDetails, cx);
+
+                    if (history == null) {
+                        applyDetails.add("history object unresolved after create attempt; continuing with id/ord attachment path");
+                    }
 
                     String status;
                     if (alreadyConfigured) {
@@ -126,49 +135,421 @@ public final class NiagaraHistoryWriteTools {
         };
     }
 
-    private BHistory tryCreateHistory(String historyId, Context cx) {
+    private BHistory tryCreateHistory(String historyId, BComponent point, List<Object> details, Context cx) {
         try {
             Object svcObj = BOrd.make("station:|slot:/Services/HistoryService").get(null, cx);
             if (svcObj == null) {
+                details.add("history create: HistoryService unavailable");
                 return null;
             }
             Object db = invokeNoArg(svcObj, "getDatabase");
             if (db == null) {
+                details.add("history create: history database unavailable");
                 return null;
             }
+            details.add("history create: db class=" + db.getClass().getName());
 
             String[] methodNames = new String[] {
                     "createHistory", "addHistory", "makeHistory", "create"
             };
-            for (String methodName : methodNames) {
-                Object created = invokeWithStringArg(db, methodName, historyId);
-                if (created instanceof BHistory) {
-                    return (BHistory) created;
+            for (String candidateId : buildHistoryIdCandidates(historyId)) {
+                for (String methodName : methodNames) {
+                    Object created = invokeWithStringArg(db, methodName, candidateId);
+                    if (created instanceof BHistory) {
+                        details.add("history create: " + methodName + " on db succeeded for " + candidateId);
+                        return (BHistory) created;
+                    }
                 }
+            }
+            details.add("history create: direct db create methods did not return BHistory");
+
+            // Niagara 4.15 local DB path: build a BHistoryConfig and call setConfig(BHistoryConfig).
+            if (createHistoryViaConnection(db, historyId, point, cx, details)
+                    || createHistoryViaSetConfig(db, historyId, point, details)) {
+                invokeNoArg(db, "createArchive");
+                invokeNoArg(db, "flush");
+                invokeNoArg(svcObj, "saveDb");
+                BHistory created = findHistoryByCandidates(historyId, cx);
+                if (created != null) {
+                    details.add("history create: resolved after setConfig(BHistoryConfig)");
+                    return created;
+                }
+                details.add("history create: setConfig invoked but history still unresolved");
             }
 
             // Some platforms create history via service-level APIs rather than database APIs.
-            for (String methodName : methodNames) {
-                Object created = invokeWithStringArg(svcObj, methodName, historyId);
-                if (created instanceof BHistory) {
-                    return (BHistory) created;
+            for (String candidateId : buildHistoryIdCandidates(historyId)) {
+                for (String methodName : methodNames) {
+                    Object created = invokeWithStringArg(svcObj, methodName, candidateId);
+                    if (created instanceof BHistory) {
+                        details.add("history create: " + methodName + " on service succeeded for " + candidateId);
+                        return (BHistory) created;
+                    }
                 }
             }
+            details.add("history create: service create methods did not return BHistory");
 
-            return NiagaraHistoryTools.findHistory(historyId, cx);
+            return findHistoryByCandidates(historyId, cx);
         } catch (Throwable e) {
+            details.add("history create: exception=" + describeThrowable(e));
             LOG.fine("History creation fallback failed: " + e.getMessage());
             return null;
         }
+    }
+
+    private boolean createHistoryViaSetConfig(Object historyDb, String historyId, BComponent point, List<Object> details) {
+        if (historyDb == null || isBlank(historyId)) {
+            return false;
+        }
+        try {
+            boolean invoked = false;
+            for (String candidateId : buildHistoryIdCandidates(historyId)) {
+                Object config = makeHistoryConfig(candidateId, point, details);
+                if (config == null) {
+                    details.add("history create: config build failed for " + candidateId);
+                    continue;
+                }
+                for (Method method : historyDb.getClass().getMethods()) {
+                    if (!"setConfig".equals(method.getName())) {
+                        continue;
+                    }
+                    Class<?>[] params = method.getParameterTypes();
+                    if (params.length != 1) {
+                        continue;
+                    }
+                    if (!params[0].isInstance(config)) {
+                        continue;
+                    }
+                    method.invoke(historyDb, config);
+                    invoked = true;
+                    details.add("history create: setConfig invoked for " + candidateId);
+                }
+            }
+            return invoked;
+        } catch (Throwable e) {
+            details.add("history create: setConfig path exception=" + describeThrowable(e));
+            LOG.fine("setConfig(BHistoryConfig) creation path failed: " + e.getMessage());
+        }
+        return false;
+    }
+
+    private boolean createHistoryViaConnection(Object historyDb,
+                                               String historyId,
+                                               BComponent point,
+                                               Context cx,
+                                               List<Object> details) {
+        if (historyDb == null || isBlank(historyId)) {
+            return false;
+        }
+        try {
+            Object connection = null;
+            for (Method m : historyDb.getClass().getMethods()) {
+                if (!"getConnection".equals(m.getName())) {
+                    continue;
+                }
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length == 1 && Context.class.isAssignableFrom(p[0])) {
+                    connection = m.invoke(historyDb, cx);
+                    break;
+                }
+            }
+
+            if (connection == null) {
+                details.add("history create: getConnection(Context) unavailable");
+                return false;
+            }
+
+            boolean invoked = false;
+            for (String candidateId : buildHistoryIdCandidates(historyId)) {
+                Object config = makeHistoryConfig(candidateId, point, details);
+                Object historyIdObj = makeHistoryId(candidateId);
+                if (config == null || historyIdObj == null) {
+                    continue;
+                }
+
+                if (invokeSingleArg(connection, "createHistory", config)) {
+                    invoked = true;
+                    details.add("history create: connection.createHistory invoked for " + candidateId);
+                }
+
+                Boolean exists = invokeExists(connection, historyIdObj);
+                if (Boolean.TRUE.equals(exists)) {
+                    details.add("history create: connection.exists true for " + candidateId);
+                    return true;
+                }
+            }
+
+            return invoked;
+        } catch (Throwable e) {
+            details.add("history create: connection path exception=" + describeThrowable(e));
+            return false;
+        }
+    }
+
+    private Boolean invokeExists(Object connection, Object historyIdObj) {
+        if (connection == null || historyIdObj == null) {
+            return null;
+        }
+        for (Method method : connection.getClass().getMethods()) {
+            if (!"exists".equals(method.getName())) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1) {
+                continue;
+            }
+            if (!params[0].isInstance(historyIdObj)) {
+                continue;
+            }
+            try {
+                Object out = method.invoke(connection, historyIdObj);
+                if (out instanceof Boolean) {
+                    return (Boolean) out;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private Object makeHistoryConfig(String historyId, BComponent point, List<Object> details) {
+        try {
+            Class<?> configClass = Class.forName("javax.baja.history.BHistoryConfig");
+            Object historyIdObj = makeHistoryId(historyId);
+            if (historyIdObj == null) {
+                details.add("history create: could not construct BHistoryId for " + historyId);
+                return null;
+            }
+
+            Object typeSpec = makeHistoryRecordTypeSpec(point);
+
+            Object config = null;
+            if (typeSpec != null) {
+                for (java.lang.reflect.Constructor<?> ctor : configClass.getConstructors()) {
+                    Class<?>[] params = ctor.getParameterTypes();
+                    if (params.length == 2 && params[0].isInstance(historyIdObj) && params[1].isInstance(typeSpec)) {
+                        config = ctor.newInstance(historyIdObj, typeSpec);
+                        break;
+                    }
+                }
+            }
+
+            if (config == null) {
+                config = configClass.getConstructor().newInstance();
+            }
+
+            // Common names observed across releases.
+            if (!invokeSingleArg(config, "setId", historyIdObj)
+                    && !invokeSingleArg(config, "setHistoryId", historyIdObj)
+                    && !invokeSingleArg(config, "setHistoryName", String.valueOf(historyId))) {
+                details.add("history create: no id setter accepted for " + historyId);
+                return null;
+            }
+
+            if (typeSpec != null && !invokeSingleArg(config, "setRecordType", typeSpec)) {
+                details.add("history create: setRecordType not applied for " + historyId);
+            }
+            return config;
+        } catch (Throwable e) {
+            details.add("history create: BHistoryConfig construction exception=" + describeThrowable(e));
+            LOG.fine("BHistoryConfig construction failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private Object makeHistoryId(String historyId) {
+        try {
+            Class<?> historyIdClass = Class.forName("javax.baja.history.BHistoryId");
+            String normalized = normalizeHistoryId(historyId);
+
+            String deviceName = null;
+            String historyName = null;
+            if (!isBlank(normalized)) {
+                String id = normalized.startsWith("/") ? normalized.substring(1) : normalized;
+                int slash = id.indexOf('/');
+                if (slash > 0 && slash < id.length() - 1) {
+                    deviceName = id.substring(0, slash);
+                    historyName = id.substring(slash + 1);
+                }
+            }
+
+            for (Method method : historyIdClass.getMethods()) {
+                if (!"make".equals(method.getName())) {
+                    continue;
+                }
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length == 2
+                        && String.class.equals(params[0])
+                        && String.class.equals(params[1])
+                        && !isBlank(deviceName)
+                        && !isBlank(historyName)) {
+                    try {
+                        return method.invoke(null, deviceName, historyName);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (params.length == 1 && String.class.equals(params[0])) {
+                    try {
+                        return method.invoke(null, normalized);
+                    } catch (Throwable ignored) {
+                    }
+                    return method.invoke(null, historyId);
+                }
+            }
+            for (java.lang.reflect.Constructor<?> ctor : historyIdClass.getConstructors()) {
+                Class<?>[] params = ctor.getParameterTypes();
+                if (params.length == 1 && String.class.equals(params[0])) {
+                    try {
+                        return ctor.newInstance(normalized);
+                    } catch (Throwable ignored) {
+                    }
+                    return ctor.newInstance(historyId);
+                }
+            }
+        } catch (Throwable e) {
+            LOG.fine("BHistoryId construction failed: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private BHistory findHistoryByCandidates(String historyId, Context cx) {
+        for (String candidateId : buildHistoryIdCandidates(historyId)) {
+            BHistory history = NiagaraHistoryTools.findHistory(candidateId, cx);
+            if (history != null) {
+                return history;
+            }
+        }
+        return null;
+    }
+
+    private List<String> buildHistoryIdCandidates(String historyId) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        String base = normalizeHistoryId(historyId);
+        if (!isBlank(base)) {
+            ids.add(base);
+            ids.add(base.startsWith("/") ? base.substring(1) : "/" + base);
+        }
+        String raw = asString(historyId);
+        if (!isBlank(raw)) {
+            ids.add(raw);
+            ids.add(raw.startsWith("/") ? raw.substring(1) : "/" + raw);
+        }
+        return new ArrayList<>(ids);
+    }
+
+    private String normalizeHistoryId(String historyId) {
+        String id = asString(historyId);
+        if (isBlank(id)) {
+            return id;
+        }
+        String trimmed = id.trim();
+        if (trimmed.startsWith("local:|") || trimmed.startsWith("foxwss:|") || trimmed.contains("station:|")) {
+            return trimmed;
+        }
+        return trimmed.startsWith("/") ? trimmed : "/" + trimmed;
+    }
+
+    private Object makeHistoryRecordTypeSpec(BComponent point) {
+        try {
+            String trendRecordClassName = pickTrendRecordClassName(point);
+            Class<?> trendRecordClass = Class.forName(trendRecordClassName);
+            java.lang.reflect.Field typeField = trendRecordClass.getField("TYPE");
+            Object typeObj = typeField.get(null);
+            if (typeObj == null) {
+                return null;
+            }
+
+            Class<?> typeSpecClass = Class.forName("javax.baja.util.BTypeSpec");
+            for (Method method : typeSpecClass.getMethods()) {
+                if (!"make".equals(method.getName())) {
+                    continue;
+                }
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length == 1 && params[0].isInstance(typeObj)) {
+                    return method.invoke(null, typeObj);
+                }
+            }
+        } catch (Throwable e) {
+            LOG.fine("Unable to build history record type spec: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private String pickTrendRecordClassName(BComponent point) {
+        String className = point != null ? point.getClass().getName() : "";
+        String lower = className != null ? className.toLowerCase() : "";
+
+        if (lower.contains("boolean")) {
+            return "javax.baja.history.BBooleanTrendRecord";
+        }
+        if (lower.contains("string")) {
+            return "javax.baja.history.BStringTrendRecord";
+        }
+        if (lower.contains("enum")) {
+            return "javax.baja.history.BEnumTrendRecord";
+        }
+        return "javax.baja.history.BNumericTrendRecord";
+    }
+
+    private boolean invokeSingleArg(Object target, String methodName, Object arg) {
+        if (target == null || methodName == null) {
+            return false;
+        }
+        for (Method method : target.getClass().getMethods()) {
+            if (!methodName.equals(method.getName())) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1) {
+                continue;
+            }
+            if (arg != null && !params[0].isAssignableFrom(arg.getClass())) {
+                continue;
+            }
+            try {
+                method.invoke(target, arg);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private Map<String, Object> createHistoryDebugReport(String normalizedPointOrd, String historyId, Context cx) {
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("pointOrd", normalizedPointOrd);
+        report.put("historyId", historyId);
+        report.put("historyService", describeClass(null));
+        report.put("historyDatabase", describeClass(null));
+        report.put("existingHistory", describeClass(null));
+        report.put("existingHistoryFound", Boolean.FALSE);
+
+        try {
+            Object svcObj = BOrd.make("station:|slot:/Services/HistoryService").get(null, cx);
+            report.put("historyService", describeClass(svcObj != null ? svcObj.getClass() : null));
+
+            Object db = svcObj != null ? invokeNoArg(svcObj, "getDatabase") : null;
+            report.put("historyDatabase", describeClass(db != null ? db.getClass() : null));
+
+            BHistory history = NiagaraHistoryTools.findHistory(historyId, cx);
+            report.put("existingHistory", describeClass(history != null ? history.getClass() : null));
+            report.put("existingHistoryFound", Boolean.valueOf(history != null));
+        } catch (Throwable e) {
+            report.put("debugError", describeThrowable(e));
+        }
+
+        return report;
     }
 
     private boolean attachHistoryToPoint(BComponent point, BHistory history, String historyId,
                                          boolean enabled, List<Object> details, Context cx) {
         boolean applied = false;
 
-        if (invokeNamedSetter(point, "history", history, cx)) {
-            details.add("setHistory applied");
-            applied = true;
+        if (history != null) {
+            if (invokeNamedSetter(point, "history", history, cx)) {
+                details.add("setHistory applied");
+                applied = true;
+            }
         }
 
         if (invokeNamedSetter(point, "historyId", historyId, cx)) {
@@ -327,6 +708,99 @@ public final class NiagaraHistoryWriteTools {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private Map<String, Object> describeClass(Class<?> type) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (type == null) {
+            out.put("className", "<unknown>");
+            out.put("superclasses", new ArrayList<Object>());
+            out.put("interfaces", new ArrayList<Object>());
+            out.put("publicMethods", new ArrayList<Object>());
+            return out;
+        }
+        out.put("className", type.getName());
+        out.put("superclasses", describeSuperclasses(type));
+        out.put("interfaces", describeInterfaces(type));
+        out.put("publicMethods", describePublicMethods(type));
+        return out;
+    }
+
+    private List<Object> describeSuperclasses(Class<?> type) {
+        List<Object> names = new ArrayList<>();
+        Class<?> current = type != null ? type.getSuperclass() : null;
+        while (current != null) {
+            names.add(current.getName());
+            current = current.getSuperclass();
+        }
+        return names;
+    }
+
+    private List<Object> describeInterfaces(Class<?> type) {
+        List<String> names = new ArrayList<>();
+        collectInterfaceNames(type, names);
+        java.util.Collections.sort(names);
+        List<Object> out = new ArrayList<>();
+        out.addAll(names);
+        return out;
+    }
+
+    private void collectInterfaceNames(Class<?> type, List<String> names) {
+        if (type == null) {
+            return;
+        }
+        Class<?>[] interfaces = type.getInterfaces();
+        for (int i = 0; i < interfaces.length; i++) {
+            String name = interfaces[i].getName();
+            if (!names.contains(name)) {
+                names.add(name);
+            }
+            collectInterfaceNames(interfaces[i], names);
+        }
+        collectInterfaceNames(type.getSuperclass(), names);
+    }
+
+    private List<Object> describePublicMethods(Class<?> type) {
+        List<Object> signatures = new ArrayList<>();
+        if (type == null) {
+            return signatures;
+        }
+        Method[] methods = type.getMethods();
+        List<String> methodStrings = new ArrayList<>();
+        for (int i = 0; i < methods.length; i++) {
+            Method m = methods[i];
+            StringBuilder sb = new StringBuilder();
+            sb.append(m.getReturnType().getName()).append(" ");
+            sb.append(m.getDeclaringClass().getName()).append(".");
+            sb.append(m.getName()).append("(");
+            Class<?>[] params = m.getParameterTypes();
+            for (int p = 0; p < params.length; p++) {
+                if (p > 0) {
+                    sb.append(", ");
+                }
+                sb.append(params[p].getName());
+            }
+            sb.append(")");
+            methodStrings.add(sb.toString());
+        }
+        java.util.Collections.sort(methodStrings);
+        signatures.addAll(methodStrings);
+        return signatures;
+    }
+
+    private String describeThrowable(Throwable t) {
+        if (t == null) {
+            return "unknown error";
+        }
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            message = "<no message>";
+        }
+        return root.getClass().getName() + ": " + message;
     }
 
     private Object invokeWithStringArg(Object target, String methodName, String value) {

@@ -1,7 +1,7 @@
 <!-- Copyright (c) 2026 Chris Favre. This cover is licensed under the MIT License. -->
 # nMCP Roadmap
 
-**Current release: v0.8.1** — merged to `main`
+**Current release: v0.8.2** — merged to `main`
 
 ---
 
@@ -100,6 +100,11 @@
 - Added `nmcp.wiresheet.schema` for operation-shape introspection and one-retry client self-correction
 - Runtime `readOnly` gate now updates live through a mutable NiagaraSecurity policy propagated from BMcpService
 - Component allowlist failures now return structured security payloads (no fallback to unknown error)
+
+### v0.8.2 — Runtime BQL + History Provisioning + Search Filtering ✅ Current
+- `nmcp.bql.query` replaced TODO scaffolding with runtime BQL execution and reflective fallback diagnostics
+- `nmcp.history.provisionOnPoint` hardened for Niagara 4.15 history DB APIs with connection-based `createHistory(BHistoryConfig)` fallback and live-verified creation behavior
+- `nmcp.component.search` filtering normalized (`trim` + case-insensitive matching) and type filtering expanded to support qualified type expressions (for example `control:numeric`)
 
 ---
 

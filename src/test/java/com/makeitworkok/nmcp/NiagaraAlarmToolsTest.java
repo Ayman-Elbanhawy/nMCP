@@ -113,4 +113,11 @@ class NiagaraAlarmToolsTest {
         assertTrue(schema.contains("\"sourceOrd\""));
         assertTrue(schema.contains("\"required\""));
     }
+
+    @Test
+    void normalizeAlarmSourceOrd_stripsPrefixesAndDuplicateStation() {
+        String raw = "local:|station:|station:|slot:/Drivers/BacnetNetwork/Device/Point";
+        String normalized = NiagaraAlarmTools.normalizeAlarmSourceOrd(raw);
+        assertEquals("station:|slot:/Drivers/BacnetNetwork/Device/Point", normalized);
+    }
 }

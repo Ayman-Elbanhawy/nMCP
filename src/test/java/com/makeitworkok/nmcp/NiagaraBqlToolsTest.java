@@ -53,10 +53,38 @@ class NiagaraBqlToolsTest {
     }
 
     @Test
+    void bqlQuery_ordPrefixedSelect_notRejectedBySelectGuard() {
+        NiagaraBqlTools tools = new NiagaraBqlTools(security(true));
+        Map<String, Object> args = new HashMap<String, Object>();
+        args.put("query", "station:|slot:/|bql:select name from control:ControlPoint");
+
+        McpToolResult result = tools.tools().get(0).call(args, null);
+
+        assertTrue(result.isError());
+        // Unit test runtime doesn't include BQL engine; ensure the failure is runtime, not SELECT validation.
+        assertFalse(result.getErrorMessage().contains("Only SELECT queries are permitted"));
+    }
+
+    @Test
     void bqlQuery_inputSchema_containsQueryAndLimit() {
         NiagaraBqlTools tools = new NiagaraBqlTools(security(true));
         String schema = tools.tools().get(0).inputSchema();
         assertTrue(schema.contains("\"query\""));
         assertTrue(schema.contains("\"limit\""));
+        assertTrue(schema.contains("\"debug\""));
+    }
+
+    @Test
+    void bqlQuery_debug_returnsDiagnosticPayloadWithoutBqlRuntime() {
+        NiagaraBqlTools tools = new NiagaraBqlTools(security(true));
+        Map<String, Object> args = new HashMap<String, Object>();
+        args.put("query", "station:|slot:/|bql:select name from control:ControlPoint");
+        args.put("debug", Boolean.TRUE);
+
+        McpToolResult result = tools.tools().get(0).call(args, null);
+
+        assertFalse(result.isError());
+        assertTrue(result.getContent().contains("\"debug\":true"));
+        assertTrue(result.getContent().contains("\"normalizedQuery\":\"select name from control:ControlPoint\""));
     }
 }

@@ -1,8 +1,14 @@
 // Copyright (c) 2026 Chris Favre. This cover is licensed under the MIT License.
 package com.makeitworkok.nmcp;
 
+import javax.baja.sys.BComponent;
+import javax.baja.sys.Context;
+import javax.baja.sys.BValue;
+import javax.baja.sys.Property;
+import javax.baja.sys.Type;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -173,6 +179,34 @@ class NiagaraWriteToolsTest {
         assertTrue(schema.contains("\"required\""));
     }
 
+    @Test
+    void invokeAction_prefersActionSlotFallback() throws Exception {
+        NiagaraWriteTools tools = new NiagaraWriteTools(writeSecurity());
+        Method method = NiagaraWriteTools.class.getDeclaredMethod("invokeComponentAction", BComponent.class, String.class, Object.class, Context.class);
+        method.setAccessible(true);
+
+        FakeActionSlot slot = new FakeActionSlot("toggle");
+        FakeActionComponent component = new FakeActionComponent(slot);
+
+        String result = (String) method.invoke(tools, component, "toggle", null, null);
+
+        assertTrue(slot.invoked);
+        assertTrue(result.contains("action slot"));
+    }
+
+    @Test
+    void invokeAction_releaseUsesDedicatedOverridePath() throws Exception {
+        NiagaraWriteTools tools = new NiagaraWriteTools(writeSecurity());
+        Method method = NiagaraWriteTools.class.getDeclaredMethod("invokeComponentAction", BComponent.class, String.class, Object.class, Context.class);
+        method.setAccessible(true);
+
+        FakeReleaseComponent component = new FakeReleaseComponent();
+        String result = (String) method.invoke(tools, component, "release", null, null);
+
+        assertEquals("in8", component.lastSlot);
+        assertTrue(result.contains("released override via in8"));
+    }
+
     // -------------------------------------------------------------------------
     // nmcp.station.restart — security checks
     // -------------------------------------------------------------------------
@@ -254,5 +288,70 @@ class NiagaraWriteToolsTest {
         assertTrue(result.isError());
         assertTrue(result.getErrorMessage().toLowerCase().contains("read-only")
                 || result.getErrorMessage().toLowerCase().contains("readonly"));
+    }
+
+    private static final class FakeActionComponent extends BComponent {
+        private final FakeActionSlot slot;
+
+        private FakeActionComponent(FakeActionSlot slot) {
+            this.slot = slot;
+        }
+
+        @Override
+        public Property getProperty(String name) {
+            if (slot != null && slot.getName().equals(name)) {
+                return slot;
+            }
+            return null;
+        }
+    }
+
+    private static final class FakeReleaseComponent extends BComponent {
+        private String lastSlot;
+        private BValue lastValue;
+
+        @Override
+        public void set(String slotName, BValue value) {
+            this.lastSlot = slotName;
+            this.lastValue = value;
+        }
+    }
+
+    private static final class FakeActionSlot implements Property {
+        private final String name;
+        private boolean invoked;
+
+        private FakeActionSlot(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public Type getType() {
+            return null;
+        }
+
+        @Override
+        public boolean isProperty() {
+            return false;
+        }
+
+        @Override
+        public boolean isAction() {
+            return true;
+        }
+
+        @Override
+        public javax.baja.sys.BValue getDefaultValue() {
+            return null;
+        }
+
+        public void invoke(Context cx) {
+            invoked = true;
+        }
     }
 }

@@ -54,4 +54,20 @@ class NiagaraComponentToolsTest {
         assertTrue(allowedValues instanceof List);
         assertTrue(((List<?>) allowedValues).contains("station:|slot:/Drivers"));
     }
+
+    @Test
+    void componentSearch_filterNormalization_trimsAndLowers() {
+        assertNull(NiagaraComponentTools.normalizeFilter(null));
+        assertNull(NiagaraComponentTools.normalizeFilter("   "));
+        assertEquals("damper", NiagaraComponentTools.normalizeFilter("  Damper  "));
+    }
+
+    @Test
+    void componentSearch_matchesFilter_supportsNullAndCaseInsensitiveContains() {
+        assertTrue(NiagaraComponentTools.matchesFilter("Anything", null));
+        assertTrue(NiagaraComponentTools.matchesFilter("control:NumericPoint", "numericpoint"));
+        assertTrue(NiagaraComponentTools.matchesFilter("control:NumericPoint", "control:numeric"));
+        assertFalse(NiagaraComponentTools.matchesFilter("control:BooleanPoint", "numeric"));
+        assertFalse(NiagaraComponentTools.matchesFilter(null, "numeric"));
+    }
 }
